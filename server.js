@@ -1,19 +1,54 @@
 const express = require("express");
-const fileUpload = require("express-fileupload");
+// Multer is a middleware for handling multipart/form-data, primarily used for uploading files
+const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const app = express();
 const port = 3000;
 
+// === MULTER CONFIGURATION ===
+
+// Configure where and how multer will store uploaded files
+// diskStorage lets us control both the destination folder and filename
+const storage = multer.diskStorage({
+  // Set the destination folder where uploaded files will be saved
+  destination: function (req, file, cb) {
+    // The callback takes two parameters: error (null if no error) and destination path
+    cb(null, "uploads/");
+  },
+  // Define how filenames will be generated for uploaded files
+  filename: function (req, file, cb) {
+    // Create a unique filename using current timestamp + original file extension
+    cb(null, Date.now() + path.extname(file.originalname));
+  },
+});
+
+// Create a filter to only allow certain file types
+// This prevents users from uploading non-image files
+const fileFilter = (req, file, cb) => {
+  // Check if the file extension matches allowed image formats
+  if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/)) {
+    // If not an allowed format, reject the file with an error message
+    return cb(new Error("Only image files are allowed!"), false);
+  }
+  // If file passes the check, accept it
+  cb(null, true);
+};
+
+// Initialize multer with our configuration options
+const upload = multer({
+  storage: storage, // Use the storage configuration we defined above
+  fileFilter: fileFilter, // Use the file filter we defined above
+  limits: {
+    fileSize: 5 * 1024 * 1024, // Limit file size to 5MB to prevent large uploads
+  },
+});
+
 // Serve static files from the public directory
 app.use(express.static("public"));
-
-// Set up express-fileupload middleware
-app.use(
-  fileUpload({
-    createParentPath: true, // Creates the directory if it doesn't exist
-  })
-);
+// These middlewares parse form data and JSON data in requests
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 // Path to our products JSON file
 const productsFilePath = path.join(__dirname, "products.json");
@@ -85,24 +120,26 @@ app.get("/products", (req, res) => {
   res.send(productList);
 });
 
-app.post("/formSubmit", (req, res) => {
-  // Check if files were uploaded
-  if (!req.files || !req.files.image) {
+// === MULTER IN ACTION ===
+
+// The upload.single('image') middleware processes a single file upload
+// 'image' must match the name attribute in the HTML form's file input
+app.post("/formSubmit", upload.single("image"), (req, res) => {
+  // After multer processes the upload, the file details are available in req.file
+  // If no file was uploaded or there was an error, req.file will be undefined
+  if (!req.file) {
     return res.status(400).send("No product image was uploaded.");
   }
 
-  //req.files is an object that contains the uploaded files
-  const uploadedImage = req.files.image;
-
-  // Access form data
+  // Access form data from req.body (multer doesn't interfere with text fields)
   const make = req.body.make;
   const model = req.body.model;
   const price = req.body.price;
   const description = req.body.description;
 
-  // Create a unique filename
-  const fileName = Date.now() + path.extname(uploadedImage.name);
-  const uploadPath = __dirname + "/uploads/" + fileName;
+  // Multer has already saved the file to the uploads directory
+  // We can access the generated filename from req.file.filename
+  const fileName = req.file.filename;
 
   // Create product object
   const newProduct = {
@@ -111,42 +148,36 @@ app.post("/formSubmit", (req, res) => {
     model,
     price: parseFloat(price),
     description,
-    imageFileName: fileName,
+    imageFileName: fileName, // Store the filename multer generated
     createdAt: new Date().toISOString(),
   };
 
   // Log the product data
   console.log("Product data:", newProduct);
 
-  // .mv() is a method that moves the file
-  uploadedImage.mv(uploadPath, function (err) {
-    if (err) {
-      return res.status(500).send(err);
-    }
+  // Save product data to JSON file
+  const products = readProducts();
+  products.push(newProduct);
+  writeProducts(products);
 
-    // Save product data to JSON file
-    const products = readProducts();
-    products.push(newProduct);
-    writeProducts(products);
-
-    // Send a success response with product details
-    res.send(`
-      <h1>Product Added Successfully!</h1>
-      <p><strong>Make:</strong> ${make}</p>
-      <p><strong>Model:</strong> ${model}</p>
-      <p><strong>Price:</strong> $${price}</p>
-      <p><strong>Description:</strong> ${description || "N/A"}</p>
-      <p><strong>Image:</strong> ${fileName}</p>
-      <img src="/uploads/${fileName}" style="max-width: 300px;">
-      <div style="margin-top: 20px;">
-        <a href="/form">Add Another Product</a> | 
-        <a href="/products">View All Products</a>
-      </div>
-    `);
-  });
+  // Send a success response with product details
+  res.send(`
+    <h1>Product Added Successfully!</h1>
+    <p><strong>Make:</strong> ${make}</p>
+    <p><strong>Model:</strong> ${model}</p>
+    <p><strong>Price:</strong> $${price}</p>
+    <p><strong>Description:</strong> ${description || "N/A"}</p>
+    <p><strong>Image:</strong> ${fileName}</p>
+    <img src="/uploads/${fileName}" style="max-width: 300px;">
+    <div style="margin-top: 20px;">
+      <a href="/form">Add Another Product</a> | 
+      <a href="/products">View All Products</a>
+    </div>
+  `);
 });
 
-// Serve uploaded files
+// Serve uploaded files from the uploads directory
+// This makes the uploaded images accessible via /uploads/filename
 app.use("/uploads", express.static("uploads"));
 
 app.listen(port, () => {
